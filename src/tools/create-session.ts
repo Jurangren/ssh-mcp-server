@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { SSHConfig } from "../models/types.js";
+import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
 import { SessionManager } from "../services/session-manager.js";
 import { Logger } from "../utils/logger.js";
 import { toToolError } from "../utils/tool-error.js";
@@ -16,6 +17,7 @@ const splitCsv = (value?: string): string[] | undefined =>
  */
 export function registerCreateSessionTool(server: McpServer): void {
   const sessionManager = SessionManager.getInstance();
+  const sshManager = SSHConnectionManager.getInstance();
 
   server.registerTool(
     "create-session",
@@ -102,6 +104,14 @@ export function registerCreateSessionTool(server: McpServer): void {
         };
 
         const sessid = sessionManager.createSession(config);
+
+        try {
+          await sshManager.connect(sessid);
+        } catch (error) {
+          sessionManager.removeSession(sessid);
+          throw error;
+        }
+
         return {
           content: [
             {

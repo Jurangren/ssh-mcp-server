@@ -26,6 +26,11 @@ export class SessionManager {
     return sessid;
   }
 
+  public removeSession(sessid: string): void {
+    this.sessionConfigs.delete(sessid);
+    this.syncToSshManager();
+  }
+
   public addInitialConfigs(configs: SshConnectionConfigMap): void {
     for (const [name, config] of Object.entries(configs)) {
       this.sessionConfigs.set(name, {
