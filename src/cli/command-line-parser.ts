@@ -11,6 +11,10 @@ import { lookupSshConfig } from "../utils/ssh-config-parser.js";
 export class CommandLineParser {
   private static readonly DEFAULT_TRANSPORT_MODE: SSHConfig["transportMode"] = "exec";
   private static readonly DEFAULT_SHELL_READY_TIMEOUT_MS = 10000;
+  private static readonly DEFAULT_MCP_TRANSPORT = "stdio";
+  private static readonly DEFAULT_HTTP_HOST = "127.0.0.1";
+  private static readonly DEFAULT_HTTP_PORT = 3000;
+  private static readonly DEFAULT_HTTP_PATH = "/mcp";
 
   private static parseBoolean(value: unknown): boolean | undefined {
     if (value === undefined) {
@@ -65,6 +69,37 @@ export class CommandLineParser {
     return parsed;
   }
 
+  private static parseMcpTransport(value: unknown): "stdio" | "http" {
+    const transport = value === undefined || value === null || value === ""
+      ? this.DEFAULT_MCP_TRANSPORT
+      : String(value).trim().toLowerCase();
+
+    if (transport === "stdio" || transport === "http") {
+      return transport;
+    }
+
+    throw new Error(`mcp-transport must be either 'stdio' or 'http', got: ${String(value)}`);
+  }
+
+  private static parseHttpPort(value: unknown): number {
+    if (value === undefined || value === null || value === "") {
+      return this.DEFAULT_HTTP_PORT;
+    }
+
+    const port = typeof value === "number" ? value : parseInt(String(value), 10);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      throw new Error(`http-port must be a valid TCP port, got: ${String(value)}`);
+    }
+    return port;
+  }
+
+  private static parseHttpPath(value: unknown): string {
+    const httpPath = value === undefined || value === null || value === ""
+      ? this.DEFAULT_HTTP_PATH
+      : String(value).trim();
+    return httpPath.startsWith("/") ? httpPath : `/${httpPath}`;
+  }
+
   /**
    * Parse command line arguments
    */
@@ -91,12 +126,19 @@ export class CommandLineParser {
         "transport-mode": { type: "string" },
         "shell-ready-timeout": { type: "string" },
         "command-template": { type: "string" },
+        "mcp-transport": { type: "string" },
+        "http-host": { type: "string" },
+        "http-port": { type: "string" },
+        "http-path": { type: "string" },
+        "http-api-key": { type: "string" },
         pty: { type: "boolean" },
         "try-keyboard": { type: "boolean" },
         "pre-connect": { type: "boolean" },
       },
       allowPositionals: true,
     });
+
+    const mcpTransport = this.parseMcpTransport(values["mcp-transport"]);
 
     const configMap: SshConnectionConfigMap = {};
 
@@ -202,6 +244,20 @@ export class CommandLineParser {
       // 实际连接地址：优先使用 SSH config 的 HostName
       const actualHost = sshConfigEntry?.hostName || host;
 
+      if (!actualHost && mcpTransport === "http") {
+        return {
+          configs: configMap,
+          preConnect: values["pre-connect"] === true,
+          mcpTransport,
+          http: {
+            host: values["http-host"] || this.DEFAULT_HTTP_HOST,
+            port: this.parseHttpPort(values["http-port"]),
+            path: this.parseHttpPath(values["http-path"]),
+            apiKey: values["http-api-key"],
+          },
+        };
+      }
+
       if (!actualHost || !portStr || !username || (!password && !privateKey && !values.agent)) {
         throw new Error(
           "Missing required parameters, need to provide host, port, username and password, private key or agent"
@@ -258,6 +314,13 @@ export class CommandLineParser {
     return {
       configs: configMap,
       preConnect: values["pre-connect"] === true,
+      mcpTransport,
+      http: {
+        host: values["http-host"] || this.DEFAULT_HTTP_HOST,
+        port: this.parseHttpPort(values["http-port"]),
+        path: this.parseHttpPath(values["http-path"]),
+        apiKey: values["http-api-key"],
+      },
     };
   }
 

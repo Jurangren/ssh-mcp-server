@@ -33,6 +33,15 @@ export type SshConnectionConfigMap = Record<string, SSHConfig>;
  */
 export type LogLevel = "info" | "error" | "debug";
 
+export type McpTransportMode = "stdio" | "http";
+
+export interface HttpServerOptions {
+  host: string;
+  port: number;
+  path: string;
+  apiKey?: string;
+}
+
 /**
  * System status information
  */
@@ -87,4 +96,6 @@ export interface ServerStatus {
 export interface ParsedArgs {
   configs: SshConnectionConfigMap;
   preConnect: boolean;
+  mcpTransport: McpTransportMode;
+  http: HttpServerOptions;
 }

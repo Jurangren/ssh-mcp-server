@@ -23,6 +23,8 @@
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1",
     "socks": "^2.8.7",
     "ssh2": "^1.17.0",
     "zod": "^4.3.6"

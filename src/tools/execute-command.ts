@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
+import { SessionManager } from "../services/session-manager.js";
 import { Logger } from "../utils/logger.js";
 import { toToolError } from "../utils/tool-error.js";
 
@@ -9,6 +10,7 @@ import { toToolError } from "../utils/tool-error.js";
  */
 export function registerExecuteCommandTool(server: McpServer): void {
   const sshManager = SSHConnectionManager.getInstance();
+  const sessionManager = SessionManager.getInstance();
 
   server.registerTool(
     "execute-command",
@@ -16,11 +18,8 @@ export function registerExecuteCommandTool(server: McpServer): void {
       description: "Execute command on connected server and get output result",
       inputSchema: {
         cmdString: z.string().describe("Command to execute"),
+        sessid: z.string().describe("Session ID returned by create-session"),
         directory: z.string().optional().describe("Working directory for command execution"),
-        connectionName: z
-          .string()
-          .optional()
-          .describe("SSH connection name (optional, default is 'default')"),
         timeout: z
           .number()
           .optional()
@@ -29,8 +28,9 @@ export function registerExecuteCommandTool(server: McpServer): void {
           ),
       },
     },
-    async ({ cmdString, directory, connectionName, timeout }) => {
+    async ({ cmdString, sessid, directory, timeout }) => {
       try {
+        const connectionName = sessionManager.requireSession(sessid);
         const result = await sshManager.executeCommand(
           cmdString,
           directory,

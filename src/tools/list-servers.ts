@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
+import { SessionManager } from "../services/session-manager.js";
 
 type ServerInfo = ReturnType<SSHConnectionManager["getAllServerInfos"]>[number];
 
@@ -46,10 +48,21 @@ export function registerListServersTool(server: McpServer): void {
     "list-servers",
     {
       description: "List all available SSH server configurations",
+      inputSchema: {
+        sessid: z
+          .string()
+          .optional()
+          .describe("Optional session ID returned by create-session. If omitted, all sessions are listed."),
+      },
     },
-    async () => {
+    async ({ sessid }) => {
       const sshManager = SSHConnectionManager.getInstance();
-      const servers = sshManager.getAllServerInfos();
+      const sessionManager = SessionManager.getInstance();
+      const servers = sessid
+        ? sshManager
+            .getAllServerInfos()
+            .filter((serverInfo) => serverInfo.name === sessionManager.requireSession(sessid))
+        : sshManager.getAllServerInfos();
       return {
         content: [
           {

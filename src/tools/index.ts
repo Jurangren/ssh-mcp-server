@@ -3,12 +3,14 @@ import { registerExecuteCommandTool } from "./execute-command.js";
 import { registerUploadTool } from "./upload.js";
 import { registerDownloadTool } from "./download.js";
 import { registerListServersTool } from "./list-servers.js";
+import { registerCreateSessionTool } from "./create-session.js";
 
 /**
  * Register all tools
  * @param server MCP server instance
  */
 export function registerAllTools(server: McpServer): void {
+  registerCreateSessionTool(server);
   registerExecuteCommandTool(server);
   registerUploadTool(server);
   registerDownloadTool(server);

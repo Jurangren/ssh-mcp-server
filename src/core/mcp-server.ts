@@ -1,10 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
+import { Server as HttpServer } from "node:http";
 import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
+import { SessionManager } from "../services/session-manager.js";
 import { CommandLineParser } from "../cli/command-line-parser.js";
 import { Logger } from "../utils/logger.js";
 import { registerAllTools } from "../tools/index.js";
 import { SERVER_CONFIG } from "../config/server.js";
+import { ParsedArgs } from "../models/types.js";
 
 /**
  * MCP Server class
@@ -12,6 +19,8 @@ import { SERVER_CONFIG } from "../config/server.js";
 export class SshMcpServer {
   private server: McpServer;
   private sshManager: SSHConnectionManager;
+  private sessionManager: SessionManager;
+  private httpServer?: HttpServer;
   private shutdownHandlersRegistered = false;
   private shutdownPromise?: Promise<void>;
 
@@ -19,6 +28,7 @@ export class SshMcpServer {
     this.server = new McpServer(SERVER_CONFIG);
 
     this.sshManager = SSHConnectionManager.getInstance();
+    this.sessionManager = SessionManager.getInstance();
   }
 
   /**
@@ -34,6 +44,14 @@ export class SshMcpServer {
         Logger.log(`Received ${reason}, shutting down SSH MCP server...`, "info");
 
         this.sshManager.disconnect();
+        this.sessionManager.clear();
+
+        if (this.httpServer) {
+          await new Promise<void>((resolve) => {
+            this.httpServer?.close(() => resolve());
+          });
+          this.httpServer = undefined;
+        }
 
         try {
           await this.server.close();
@@ -75,9 +93,20 @@ export class SshMcpServer {
    * Run the server
    */
   public async run(): Promise<void> {
+    const parsedArgs = await this.initialize();
+
+    if (parsedArgs.mcpTransport === "http") {
+      await this.runHttp(parsedArgs);
+      return;
+    }
+
+    await this.runStdio();
+  }
+
+  private async initialize(): Promise<ParsedArgs> {
     // Initialize SSH configuration
     const parsedArgs = CommandLineParser.parseArgs();
-    this.sshManager.setConfig(parsedArgs.configs);
+    this.sessionManager.addInitialConfigs(parsedArgs.configs);
     this.registerShutdownHandlers();
 
     // Security warning
@@ -122,10 +151,116 @@ export class SshMcpServer {
     // Register tools
     this.registerTools();
 
+    return parsedArgs;
+  }
+
+  private async runStdio(): Promise<void> {
     // Create transport instance and connect
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
     Logger.log("MCP server connection established");
+  }
+
+  private async runHttp(parsedArgs: ParsedArgs): Promise<void> {
+    const transports: Record<string, StreamableHTTPServerTransport> = {};
+    const app = createMcpExpressApp({ host: parsedArgs.http.host });
+
+    const authenticate = (req: { headers: Record<string, unknown> }): boolean => {
+      if (!parsedArgs.http.apiKey) {
+        return true;
+      }
+      const authHeader = req.headers.authorization;
+      return authHeader === `Bearer ${parsedArgs.http.apiKey}`;
+    };
+
+    app.post(parsedArgs.http.path, async (req, res) => {
+      if (!authenticate(req)) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      let transport: StreamableHTTPServerTransport | undefined = sessionId
+        ? transports[sessionId]
+        : undefined;
+
+      try {
+        if (!transport && isInitializeRequest(req.body)) {
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (newSessionId) => {
+              if (transport) {
+                transports[newSessionId] = transport;
+              }
+            },
+          });
+          transport.onclose = () => {
+            if (transport?.sessionId) {
+              delete transports[transport.sessionId];
+            }
+          };
+          await this.server.connect(transport);
+        }
+
+        if (!transport) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32000,
+              message: "Bad Request: No valid MCP session ID provided",
+            },
+            id: null,
+          });
+          return;
+        }
+
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        Logger.handleError(error, "Failed to handle HTTP MCP request");
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          });
+        }
+      }
+    });
+
+    app.get(parsedArgs.http.path, async (req, res) => {
+      if (!authenticate(req)) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const transport = sessionId ? transports[sessionId] : undefined;
+      if (!transport) {
+        res.status(400).send("Invalid or missing MCP session ID");
+        return;
+      }
+      await transport.handleRequest(req, res);
+    });
+
+    app.delete(parsedArgs.http.path, async (req, res) => {
+      if (!authenticate(req)) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const transport = sessionId ? transports[sessionId] : undefined;
+      if (!transport) {
+        res.status(400).send("Invalid or missing MCP session ID");
+        return;
+      }
+      await transport.handleRequest(req, res);
+    });
+
+    this.httpServer = app.listen(parsedArgs.http.port, parsedArgs.http.host, () => {
+      Logger.log(
+        `MCP HTTP server listening on http://${parsedArgs.http.host}:${parsedArgs.http.port}${parsedArgs.http.path}`,
+        "info",
+      );
+    });
   }
 }
