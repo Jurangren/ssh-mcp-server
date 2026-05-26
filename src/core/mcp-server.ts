@@ -148,10 +148,18 @@ export class SshMcpServer {
       }
     }
 
-    // Register tools
-    this.registerTools();
+    if (parsedArgs.mcpTransport !== "http") {
+      // Register tools on the single stdio server instance.
+      this.registerTools();
+    }
 
     return parsedArgs;
+  }
+
+  private createServer(): McpServer {
+    const server = new McpServer(SERVER_CONFIG);
+    registerAllTools(server);
+    return server;
   }
 
   private async runStdio(): Promise<void> {
@@ -164,6 +172,7 @@ export class SshMcpServer {
 
   private async runHttp(parsedArgs: ParsedArgs): Promise<void> {
     const transports: Record<string, StreamableHTTPServerTransport> = {};
+    const servers: Record<string, McpServer> = {};
     const app = createMcpExpressApp({ host: parsedArgs.http.host });
 
     const authenticate = (req: { headers: Record<string, unknown> }): boolean => {
@@ -187,20 +196,25 @@ export class SshMcpServer {
 
       try {
         if (!transport && isInitializeRequest(req.body)) {
+          const server = this.createServer();
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (newSessionId) => {
               if (transport) {
                 transports[newSessionId] = transport;
+                servers[newSessionId] = server;
               }
             },
           });
           transport.onclose = () => {
             if (transport?.sessionId) {
               delete transports[transport.sessionId];
+              const serverToClose = servers[transport.sessionId];
+              delete servers[transport.sessionId];
+              void serverToClose?.close();
             }
           };
-          await this.server.connect(transport);
+          await server.connect(transport);
         }
 
         if (!transport) {
