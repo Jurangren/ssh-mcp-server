@@ -2,8 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { randomUUID } from "node:crypto";
 import { Server as HttpServer } from "node:http";
 import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
 import { SessionManager } from "../services/session-manager.js";
@@ -171,8 +169,6 @@ export class SshMcpServer {
   }
 
   private async runHttp(parsedArgs: ParsedArgs): Promise<void> {
-    const transports: Record<string, StreamableHTTPServerTransport> = {};
-    const servers: Record<string, McpServer> = {};
     const app = createMcpExpressApp({ host: parsedArgs.http.host });
 
     const authenticate = (req: { headers: Record<string, unknown> }): boolean => {
@@ -189,46 +185,14 @@ export class SshMcpServer {
         return;
       }
 
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      let transport: StreamableHTTPServerTransport | undefined = sessionId
-        ? transports[sessionId]
-        : undefined;
+      const server = this.createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: false,
+      });
 
       try {
-        if (!transport && isInitializeRequest(req.body)) {
-          const server = this.createServer();
-          transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (newSessionId) => {
-              if (transport) {
-                transports[newSessionId] = transport;
-                servers[newSessionId] = server;
-              }
-            },
-          });
-          transport.onclose = () => {
-            if (transport?.sessionId) {
-              delete transports[transport.sessionId];
-              const serverToClose = servers[transport.sessionId];
-              delete servers[transport.sessionId];
-              void serverToClose?.close();
-            }
-          };
-          await server.connect(transport);
-        }
-
-        if (!transport) {
-          res.status(400).json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32000,
-              message: "Bad Request: No valid MCP session ID provided",
-            },
-            id: null,
-          });
-          return;
-        }
-
+        await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
       } catch (error) {
         Logger.handleError(error, "Failed to handle HTTP MCP request");
@@ -239,35 +203,36 @@ export class SshMcpServer {
             id: null,
           });
         }
+      } finally {
+        res.on("close", () => {
+          void transport.close();
+          void server.close();
+        });
       }
     });
 
-    app.get(parsedArgs.http.path, async (req, res) => {
+    app.get(parsedArgs.http.path, (req, res) => {
       if (!authenticate(req)) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      const transport = sessionId ? transports[sessionId] : undefined;
-      if (!transport) {
-        res.status(400).send("Invalid or missing MCP session ID");
-        return;
-      }
-      await transport.handleRequest(req, res);
+      res.status(405).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed in stateless HTTP mode." },
+        id: null,
+      });
     });
 
-    app.delete(parsedArgs.http.path, async (req, res) => {
+    app.delete(parsedArgs.http.path, (req, res) => {
       if (!authenticate(req)) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      const transport = sessionId ? transports[sessionId] : undefined;
-      if (!transport) {
-        res.status(400).send("Invalid or missing MCP session ID");
-        return;
-      }
-      await transport.handleRequest(req, res);
+      res.status(405).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed in stateless HTTP mode." },
+        id: null,
+      });
     });
 
     this.httpServer = app.listen(parsedArgs.http.port, parsedArgs.http.host, () => {
