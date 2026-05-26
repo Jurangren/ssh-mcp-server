@@ -130,6 +130,33 @@ export class SSHConnectionManager {
     }
   }
 
+  public addConfig(name: string, config: SSHConfig): void {
+    this.configs[name] = config;
+    this.commandWhitelistRegexes.set(
+      name,
+      this.compilePatterns(config.commandWhitelist, name, "whitelist"),
+    );
+    this.commandBlacklistRegexes.set(
+      name,
+      this.compilePatterns(config.commandBlacklist, name, "blacklist"),
+    );
+
+    if (!this.defaultName || Object.keys(this.configs).length === 1) {
+      this.defaultName = name;
+    }
+  }
+
+  public removeConfig(name: string): void {
+    this.invalidateConnection(name);
+    delete this.configs[name];
+    this.commandWhitelistRegexes.delete(name);
+    this.commandBlacklistRegexes.delete(name);
+
+    if (this.defaultName === name) {
+      this.defaultName = Object.keys(this.configs)[0] || "default";
+    }
+  }
+
   /**
    * Get specified connection configuration
    */
@@ -195,12 +222,16 @@ export class SSHConnectionManager {
     const client = this.createClient();
     const connectionPromise = new Promise<void>(async (resolve, reject) => {
       let settled = false;
+      let connectTimeout: NodeJS.Timeout | undefined;
 
       const resolveOnce = () => {
         if (settled) {
           return;
         }
         settled = true;
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+        }
         resolve();
       };
 
@@ -209,8 +240,27 @@ export class SSHConnectionManager {
           return;
         }
         settled = true;
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+        }
+        try {
+          client.end();
+        } catch {
+          // Ignore cleanup errors when connection establishment fails.
+        }
         reject(error);
       };
+
+      connectTimeout = setTimeout(() => {
+        this.invalidateConnection(key);
+        rejectOnce(
+          new ToolError(
+            "SSH_CONNECTION_FAILED",
+            `SSH connection [${key}] timed out during authentication or handshake`,
+            true,
+          ),
+        );
+      }, 15000);
 
       client.on("ready", async () => {
         Logger.log(
@@ -754,12 +804,22 @@ export class SSHConnectionManager {
 
     // Enable keyboard-interactive authentication for 2FA/MFA
     if (config.tryKeyboard) {
+      let authHandlerCalls = 0;
       sshConfig.tryKeyboard = true;
       sshConfig.authHandler = (
         methodsLeft: string[] | null,
         partialSuccess: boolean | null,
         callback: (nextAuth: string | string[]) => void,
       ) => {
+        authHandlerCalls += 1;
+        if (authHandlerCalls > 5) {
+          Logger.log(
+            `[${key}] Too many authentication retries, aborting authentication flow`,
+            "error",
+          );
+          return callback([]);
+        }
+
         if (methodsLeft === null) {
           // Initial authentication attempt — the SSH protocol only defines
           // password / publickey / keyboard-interactive / hostbased.

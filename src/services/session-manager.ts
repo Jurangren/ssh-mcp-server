@@ -22,13 +22,13 @@ export class SessionManager {
       name: sessid,
     };
     this.sessionConfigs.set(sessid, sessionConfig);
-    this.syncToSshManager();
+    SSHConnectionManager.getInstance().addConfig(sessid, sessionConfig);
     return sessid;
   }
 
   public removeSession(sessid: string): void {
     this.sessionConfigs.delete(sessid);
-    this.syncToSshManager();
+    SSHConnectionManager.getInstance().removeConfig(sessid);
   }
 
   public addInitialConfigs(configs: SshConnectionConfigMap): void {
