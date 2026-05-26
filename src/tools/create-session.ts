@@ -12,6 +12,8 @@ const splitCsv = (value?: string): string[] | undefined =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000;
+
 /**
  * Register create-session tool
  */
@@ -65,6 +67,14 @@ export function registerCreateSessionTool(server: McpServer): void {
           .positive()
           .optional()
           .describe("Shell command timeout in milliseconds"),
+        sessionTtlMs: z
+          .number()
+          .int()
+          .positive()
+          .default(DEFAULT_SESSION_TTL_MS)
+          .describe(
+            "Idle session timeout in milliseconds. Default is 5 minutes. Values greater than 30 minutes are not recommended.",
+          ),
         commandTemplate: z
           .string()
           .optional()
@@ -103,7 +113,7 @@ export function registerCreateSessionTool(server: McpServer): void {
           tryKeyboard: args.tryKeyboard,
         };
 
-        const sessid = sessionManager.createSession(config);
+        const sessid = sessionManager.createSession(config, args.sessionTtlMs);
 
         try {
           await sshManager.connect(sessid);
