@@ -17,9 +17,16 @@ if [ ! -d "node_modules" ]; then
   npm install
 fi
 
-if [ ! -f "build/index.js" ]; then
+if [ "${SKIP_BUILD:-}" = "1" ]; then
+  echo "SKIP_BUILD=1, skipping build step."
+elif [ ! -f "build/index.js" ]; then
   echo "build/index.js not found, building project..."
   npm run build
+elif find src package.json tsconfig.json -type f -newer build/index.js | grep -q .; then
+  echo "Source files are newer than build/index.js, rebuilding project..."
+  npm run build
+else
+  echo "build/index.js is up to date."
 fi
 
 ARGS=(
