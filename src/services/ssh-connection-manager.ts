@@ -315,6 +315,38 @@ export class SSHConnectionManager {
         Logger.log(`SSH connection [${key}] closed`, "info");
       });
 
+      (client as unknown as {
+        on(
+          event: "keyboard-interactive",
+          listener: (
+            name: string,
+            instructions: string,
+            instructionsLang: string,
+            prompts: Array<{ prompt: string; echo: boolean }>,
+            finish: (responses: string[]) => void,
+          ) => void,
+        ): void;
+      }).on(
+        "keyboard-interactive",
+        (
+          name: string,
+          instructions: string,
+          instructionsLang: string,
+          prompts: Array<{ prompt: string; echo: boolean }>,
+          finish: (responses: string[]) => void,
+        ) => {
+          this.handleKeyboardInteractive(
+            key,
+            config,
+            name,
+            instructions,
+            instructionsLang,
+            prompts,
+            finish,
+          );
+        },
+      );
+
       try {
         const sshConfig = await this.buildClientConfig(key, config);
         client.connect(sshConfig);
@@ -804,118 +836,7 @@ export class SSHConnectionManager {
 
     // Enable keyboard-interactive authentication for 2FA/MFA
     if (config.tryKeyboard) {
-      let authHandlerCalls = 0;
       sshConfig.tryKeyboard = true;
-      sshConfig.authHandler = (
-        methodsLeft: string[] | null,
-        partialSuccess: boolean | null,
-        callback: (nextAuth: string | string[]) => void,
-      ) => {
-        authHandlerCalls += 1;
-        if (authHandlerCalls > 5) {
-          Logger.log(
-            `[${key}] Too many authentication retries, aborting authentication flow`,
-            "error",
-          );
-          return callback([]);
-        }
-
-        if (methodsLeft === null) {
-          // Initial authentication attempt — the SSH protocol only defines
-          // password / publickey / keyboard-interactive / hostbased.
-          // SSH agent works under the publickey method, so it does not get
-          // its own entry here.
-          const authMethods: string[] = [];
-          if (config.privateKey || config.agent) {
-            authMethods.push("publickey");
-          }
-          if (config.password) {
-            authMethods.push("password");
-          }
-          authMethods.push("keyboard-interactive");
-
-          Logger.log(
-            `[${key}] Initial authentication methods: ${authMethods.join(", ")}`,
-            "info",
-          );
-          return callback(authMethods);
-        }
-
-        // Handle subsequent authentication methods
-        Logger.log(
-          `[${key}] Server requires additional authentication. Methods left: ${methodsLeft?.join(", ") || "none"}`,
-          "info",
-        );
-
-        if (methodsLeft && methodsLeft.includes("keyboard-interactive")) {
-          return callback("keyboard-interactive");
-        }
-
-        if (methodsLeft && methodsLeft.includes("password") && config.password) {
-          return callback("password");
-        }
-
-        if (
-          methodsLeft &&
-          methodsLeft.includes("publickey") &&
-          (config.privateKey || config.agent)
-        ) {
-          return callback("publickey");
-        }
-
-        return callback(methodsLeft || []);
-      };
-
-      // Handle keyboard-interactive prompts (for 2FA codes)
-      sshConfig.keyboard = (
-        name: string,
-        instructions: string,
-        instructionsLang: string,
-        prompts: Array<{ prompt: string; echo: boolean }>,
-        finish: (responses: string[]) => void,
-      ) => {
-        Logger.log(
-          `[${key}] Keyboard-interactive authentication requested`,
-          "info",
-        );
-        Logger.log(`[${key}] Name: ${name}`, "debug");
-        Logger.log(`[${key}] Instructions: ${instructions}`, "debug");
-        Logger.log(`[${key}] Prompts: ${JSON.stringify(prompts)}`, "debug");
-
-        const otpCode = process.env.SSH_MCP_2FA_CODE;
-        const responses: string[] = [];
-        for (const prompt of prompts) {
-          const promptText = prompt.prompt.toLowerCase();
-          // For password prompts, use the configured password
-          if (
-            config.password &&
-            (promptText.includes("password") || promptText.includes("密码"))
-          ) {
-            responses.push(config.password);
-            Logger.log(
-              `[${key}] Responding to password prompt: ${prompt.prompt}`,
-              "debug",
-            );
-          } else if (otpCode) {
-            // For 2FA/verification code prompts, use SSH_MCP_2FA_CODE if provided
-            responses.push(otpCode);
-            Logger.log(
-              `[${key}] Responding to non-password prompt with SSH_MCP_2FA_CODE: ${prompt.prompt}`,
-              "info",
-            );
-          } else {
-            // No code available — empty response will fail the auth attempt;
-            // set SSH_MCP_2FA_CODE before connecting to enable 2FA/MFA.
-            responses.push("");
-            Logger.log(
-              `[${key}] Empty response for prompt (set SSH_MCP_2FA_CODE to satisfy 2FA): ${prompt.prompt}`,
-              "info",
-            );
-          }
-        }
-
-        finish(responses);
-      };
     }
 
     if (config.agent) {
@@ -970,6 +891,55 @@ export class SSHConnectionManager {
     }
 
     return sshConfig;
+  }
+
+  private handleKeyboardInteractive(
+    key: string,
+    config: SSHConfig,
+    name: string,
+    instructions: string,
+    instructionsLang: string,
+    prompts: Array<{ prompt: string; echo: boolean }>,
+    finish: (responses: string[]) => void,
+  ): void {
+    Logger.log(
+      `[${key}] Keyboard-interactive authentication requested`,
+      "info",
+    );
+    Logger.log(`[${key}] Name: ${name}`, "debug");
+    Logger.log(`[${key}] Instructions: ${instructions}`, "debug");
+    Logger.log(`[${key}] Instructions language: ${instructionsLang}`, "debug");
+    Logger.log(`[${key}] Prompts: ${JSON.stringify(prompts)}`, "debug");
+
+    const otpCode = process.env.SSH_MCP_2FA_CODE;
+    const responses: string[] = [];
+    for (const prompt of prompts) {
+      const promptText = prompt.prompt.toLowerCase();
+      if (
+        config.password &&
+        (promptText.includes("password") || promptText.includes("密码"))
+      ) {
+        responses.push(config.password);
+        Logger.log(
+          `[${key}] Responding to password prompt: ${prompt.prompt}`,
+          "debug",
+        );
+      } else if (otpCode) {
+        responses.push(otpCode);
+        Logger.log(
+          `[${key}] Responding to non-password prompt with SSH_MCP_2FA_CODE: ${prompt.prompt}`,
+          "info",
+        );
+      } else {
+        responses.push("");
+        Logger.log(
+          `[${key}] Empty response for prompt (set SSH_MCP_2FA_CODE to satisfy 2FA): ${prompt.prompt}`,
+          "info",
+        );
+      }
+    }
+
+    finish(responses);
   }
 
   private scheduleStatusCollection(key: string): void {
